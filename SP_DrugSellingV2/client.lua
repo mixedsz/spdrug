@@ -1728,10 +1728,9 @@ local function useItemHandler(data, slot)
     end
 end
 
-exports('useItem', useItemHandler)
-
--- IMPORTANT: Your items file must match the resource folder name
--- If your folder is 'SP_DrugSellingV2', items must use: client = { export = 'SP_DrugSellingV2.useItem' }
--- If your items file uses 'nbk_drug_dealer.useItem', you MUST either:
--- 1. Rename resource folder to 'nbk_drug_dealer', OR
--- 2. Update ALL items in ox_inventory to use: client = { export = 'SP_DrugSellingV2.useItem' }
+-- Items are registered via ESX.RegisterUsableItem on the server.
+-- No ox_inventory export or client export required in items.lua.
+RegisterNetEvent('nbk_drug_dealer:useItem')
+AddEventHandler('nbk_drug_dealer:useItem', function(itemName)
+    useItemHandler({ name = itemName, metadata = {} }, nil)
+end)

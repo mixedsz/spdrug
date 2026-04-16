@@ -6,6 +6,13 @@ local ESX = nil
 
 AddEventHandler('esx:getSharedObject', function(obj)
     ESX = obj
+    -- Register all drug items so players can use them from inventory
+    for _, drug in ipairs(Config.Drugs) do
+        local name = drug.name
+        ESX.RegisterUsableItem(name, function(src)
+            TriggerClientEvent('nbk_drug_dealer:useItem', src, name)
+        end)
+    end
 end)
 
 -- Fallback: synchronous fetch
