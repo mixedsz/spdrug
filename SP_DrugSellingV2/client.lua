@@ -10,8 +10,6 @@ local canInteract = false
 local interactionPed = nil
 local selling = false
 local ped = nil
-local cornerVeh = nil
-local cornerBlip = nil
 local blip = nil
 local mode = nil
 local currentDropoffDrug = nil
@@ -20,7 +18,6 @@ local currentDropoffLoc = nil
 local currentDropoffQty = 0
 local dropoffPedSpawned = false
 local dropoffUsed = {}
-local pendingSaleContext = nil -- { mode, ped, veh, drug, qty } for saleResult cleanup
 local activeDrugEffects = {}
 local activeEffectThreads = {} -- Store effect threads so they can be stopped
 local activeProgressHandlers = {} -- Store progress completion handlers
@@ -103,36 +100,6 @@ local function getClosestRoadPos(x, y, z, nodeType)
     return vector3(x, y, gz or z)
 end
 
--- Get a spawn position on paved street (taxi-style) with heading. nodeType 0 = asphalt only.
-local function getStreetNodeWithHeading(x, y, z, nodeType)
-    nodeType = nodeType or NODE_TYPE_PAVED_ROAD
-    local ok, out = pcall(function()
-        local a, b, c, d, e = GetClosestVehicleNodeWithHeading(x, y, z + 5.0, nodeType, 3.0, 0)
-        local nx, ny, nz, roadHeading
-        if type(a) == "number" and type(b) == "number" and type(c) == "number" then
-            nx, ny, nz, roadHeading = a, b, c, (type(d) == "number" and d or 0.0)
-        elseif type(b) == "number" and type(c) == "number" and type(d) == "number" then
-            nx, ny, nz, roadHeading = b, c, d, (type(e) == "number" and e or 0.0)
-        else
-            return nil
-        end
-        return { nx, ny, nz, roadHeading }
-    end)
-    if ok and out and type(out[1]) == "number" and type(out[2]) == "number" and type(out[3]) == "number" then
-        return out[1], out[2], out[3], out[4] or 0.0
-    end
-    return nil
-end
-
--- True if point is on road (helps avoid sidewalk/grass). Vehicle param ignored by native.
-local function isPointOnRoad(x, y, z)
-    return IsPointOnRoad(x, y, z, 0) == 1
-end
-
--- Pull-over spot: 8–12m from dealer so they stop on the road well before the curb/sidewalk
-local MIN_PULLOVER_DIST = 8.0
-local MAX_PULLOVER_DIST = 12.0
-
 -- Force-load collision/nav at coords so MLO and addon road nodes are available when we query (custom hoods)
 local function ensureCollisionLoadedAt(x, y, z)
     if type(RequestCollisionAtCoord) == "function" then
@@ -140,181 +107,6 @@ local function ensureCollisionLoadedAt(x, y, z)
     end
 end
 
--- Optional: use chicago_gps_nodes road/node coords for spawn, dest, and pathfinding (custom Chicago hoods)
-local function HasChicagoGpsNodes()
-    return GetResourceState("chicago_gps_nodes") == "started"
-end
-
--- Block work: spawn/dest on road when possible. Tries CLOSE range first (better for MLO/custom maps).
--- Destination is ALONG the approach path so they drive toward player.
-local function getStreetSpawnAndDest(playerCoords, _playerHeading)
-    local spawnPos = nil
-    local spawnHeadingOut = 0.0
-    local playerHead = _playerHeading or 0.0
-    local closeMin = (type(Config.BlockWorkSpawnCloseMin) == "number") and Config.BlockWorkSpawnCloseMin or 80.0
-    local closeMax = (type(Config.BlockWorkSpawnCloseMax) == "number") and Config.BlockWorkSpawnCloseMax or 220.0
-    local farMin = (type(Config.BlockWorkSpawnFarMin) == "number") and Config.BlockWorkSpawnFarMin or 350.0
-    local farMax = (type(Config.BlockWorkSpawnFarMax) == "number") and Config.BlockWorkSpawnFarMax or 550.0
-
-    -- Request collision around player and sample points so MLO/addon road nodes stream in before we search
-    ensureCollisionLoadedAt(playerCoords.x, playerCoords.y, playerCoords.z)
-    for _, deg in ipairs({ 0, 120, 240 }) do
-        local a = math.rad(deg + (playerHead or 0))
-        local d = (closeMin + closeMax) * 0.5
-        ensureCollisionLoadedAt(playerCoords.x + math.cos(a) * d, playerCoords.y + math.sin(a) * d, playerCoords.z)
-    end
-    Wait(200)
-
-    -- Prefer chicago_gps_nodes mapping when available so peds use custom hood road coords/connections
-    if HasChicagoGpsNodes() then
-        local ok, nodesInRadius = pcall(function()
-            return exports.chicago_gps_nodes:GetRoadNodesInRadius(playerCoords.x, playerCoords.y, playerCoords.z, closeMax)
-        end)
-        if ok and nodesInRadius and #nodesInRadius > 0 then
-            local playerForward = vector3(math.cos(math.rad(playerHead)), math.sin(math.rad(playerHead)), 0)
-            local bestNode = nil
-            local bestScore = -1.0
-            for _, entry in ipairs(nodesInRadius) do
-                local dist = entry.distance or #(entry.coords - playerCoords)
-                if dist >= closeMin and dist <= closeMax and entry.coords then
-                    local toNode = (entry.coords - playerCoords)
-                    local len = #toNode
-                    if len < 0.1 then toNode = playerForward len = 1.0 end
-                    toNode = toNode / len
-                    local dot = toNode.x * playerForward.x + toNode.y * playerForward.y
-                    local score = dot + (1.0 - math.abs(dist - (closeMin + closeMax) * 0.5) / closeMax) * 0.3
-                    if score > bestScore then bestScore = score bestNode = entry end
-                end
-            end
-            if bestNode and bestNode.coords then
-                spawnPos = type(bestNode.coords) == "vector3" and bestNode.coords or vector3(bestNode.coords.x, bestNode.coords.y, bestNode.coords.z)
-                local dirToPlayer = (playerCoords - spawnPos)
-                local dlen = #dirToPlayer
-                if dlen < 1.0 then dlen = 1.0 end
-                dirToPlayer = dirToPlayer / dlen
-                spawnHeadingOut = math.deg(math.atan2(dirToPlayer.x, dirToPlayer.y)) % 360.0
-                local pullOverDist = MIN_PULLOVER_DIST + (MAX_PULLOVER_DIST - MIN_PULLOVER_DIST) * math.random()
-                local destGuess = playerCoords - (dirToPlayer * pullOverDist)
-                local dOk, _, __, destCoords = pcall(function()
-                    return exports.chicago_gps_nodes:GetNearestRoadNode(destGuess.x, destGuess.y, destGuess.z)
-                end)
-                if dOk and destCoords then
-                    local destVec = type(destCoords) == "vector3" and destCoords or vector3(destCoords.x, destCoords.y, destCoords.z)
-                    local spawnToDest = #(destVec - spawnPos)
-                    local spawnToPlayer = #(playerCoords - spawnPos)
-                    if spawnToDest >= 15.0 and spawnToDest <= spawnToPlayer * 1.1 then
-                        return spawnPos, destVec, spawnHeadingOut
-                    end
-                    destVec = spawnPos + (playerCoords - spawnPos) * math.min(1.0, (spawnToPlayer > 1 and (15.0 / spawnToPlayer) or 1.0))
-                    local _, gz = GetGroundZFor_3dCoord(destVec.x, destVec.y, destVec.z + 10.0, 0)
-                    if gz then destVec = vector3(destVec.x, destVec.y, gz) end
-                    return spawnPos, destVec, spawnHeadingOut
-                end
-            end
-        end
-    end
-
-    local function trySpawnAtRange(minDist, maxDist)
-        local cornerAngles = { 75, 90, 105, -75, -90, -105, 60, 120, -60, -120 }
-        for _, deg in ipairs(cornerAngles) do
-            local angle = math.rad(playerHead + deg)
-            local dist = minDist + (maxDist - minDist) * math.random()
-            local gx = playerCoords.x + math.cos(angle) * dist
-            local gy = playerCoords.y + math.sin(angle) * dist
-            local _, gz = GetGroundZFor_3dCoord(gx, gy, playerCoords.z + 30.0, 0)
-            if not gz then gz = playerCoords.z end
-            ensureCollisionLoadedAt(gx, gy, gz)
-            -- Prefer addon-aware scan (types 1,0,2,8) so custom/minimap roads are used
-            local majorPos = getClosestRoadPos(gx, gy, gz, "all")
-            if not majorPos then majorPos = getClosestMajorRoadPos(gx, gy, gz) end
-            if majorPos then
-                local nodeVec = type(majorPos) == "table" and vector3(majorPos.x, majorPos.y, majorPos.z) or majorPos
-                if isPointOnRoad(nodeVec.x, nodeVec.y, nodeVec.z) and #(nodeVec - playerCoords) >= (minDist * 0.5) then
-                    local _, _, _, h = getStreetNodeWithHeading(nodeVec.x, nodeVec.y, nodeVec.z, NODE_TYPE_PAVED_ROAD)
-                    return nodeVec, (h and type(h) == "number") and h or nil
-                end
-            end
-        end
-        for _ = 1, 6 do
-            local angle = math.rad(math.random(0, 360))
-            local dist = minDist + (maxDist - minDist) * math.random()
-            local gx = playerCoords.x + math.cos(angle) * dist
-            local gy = playerCoords.y + math.sin(angle) * dist
-            local _, gz = GetGroundZFor_3dCoord(gx, gy, playerCoords.z + 30.0, 0)
-            if not gz then gz = playerCoords.z end
-            ensureCollisionLoadedAt(gx, gy, gz)
-            local majorPos = getClosestRoadPos(gx, gy, gz, "all") or getClosestMajorRoadPos(gx, gy, gz)
-            if majorPos then
-                local nodeVec = type(majorPos) == "table" and vector3(majorPos.x, majorPos.y, majorPos.z) or majorPos
-                if isPointOnRoad(nodeVec.x, nodeVec.y, nodeVec.z) and #(nodeVec - playerCoords) >= (minDist * 0.5) then
-                    local _, _, _, h = getStreetNodeWithHeading(nodeVec.x, nodeVec.y, nodeVec.z, NODE_TYPE_PAVED_ROAD)
-                    return nodeVec, (h and type(h) == "number") and h or nil
-                end
-            end
-        end
-        return nil, nil
-    end
-
-    -- 1) Try CLOSE range first (shorter drive = more reliable with MLO/custom roads)
-    local gotPos, gotHead = trySpawnAtRange(closeMin, closeMax)
-    if gotPos then
-        spawnPos = gotPos
-        spawnHeadingOut = (gotHead and type(gotHead) == "number") and gotHead or ((playerHead + 180.0) % 360.0)
-    end
-    -- 2) Try FAR range if close failed
-    if not spawnPos then
-        gotPos, gotHead = trySpawnAtRange(farMin, farMax)
-        if gotPos then
-            spawnPos = gotPos
-            spawnHeadingOut = (gotHead and type(gotHead) == "number") and gotHead or (math.random(0, 360) % 360.0)
-        end
-    end
-    -- 3) Last resort: ground coords (no road node) so ped always spawns
-    if not spawnPos then
-        local angle = math.rad(math.random(0, 360))
-        local dist = closeMax + 50.0
-        local gx = playerCoords.x + math.cos(angle) * dist
-        local gy = playerCoords.y + math.sin(angle) * dist
-        local _, gz = GetGroundZFor_3dCoord(gx, gy, playerCoords.z + 30.0, 0)
-        if not gz then gz = playerCoords.z end
-        spawnPos = getClosestRoadPos(gx, gy, gz, "all") or getClosestMajorRoadPos(gx, gy, gz)
-        if not spawnPos then spawnPos = vector3(gx, gy, gz) end
-        local sx, sy, sz = spawnPos.x or gx, spawnPos.y or gy, spawnPos.z or gz
-        local _, _, _, h = getStreetNodeWithHeading(sx, sy, sz, NODE_TYPE_PAVED_ROAD)
-        spawnHeadingOut = (h and type(h) == "number") and h or (math.random(0, 360) % 360.0)
-    end
-
-    -- Destination: along the approach path (spawn -> player) so no U-turn; at curb on road, not sidewalk
-    local dirToPlayer = (playerCoords - spawnPos)
-    local distToPlayer = #dirToPlayer
-    if distToPlayer < 1.0 then distToPlayer = 1.0 end
-    dirToPlayer = dirToPlayer / distToPlayer
-    local pullOverDist = MIN_PULLOVER_DIST + (MAX_PULLOVER_DIST - MIN_PULLOVER_DIST) * math.random()
-    local destGuess = playerCoords - (dirToPlayer * pullOverDist)
-    local destVec = getClosestRoadPos(destGuess.x, destGuess.y, destGuess.z, "all")
-    if not destVec then
-        destVec = getClosestMajorRoadPos(destGuess.x, destGuess.y, destGuess.z)
-    end
-    if not destVec then
-        destVec = getClosestRoadPos(playerCoords.x, playerCoords.y, playerCoords.z, "all") or getClosestMajorRoadPos(playerCoords.x, playerCoords.y, playerCoords.z)
-    end
-    destVec = (type(destVec) == "table") and vector3(destVec[1] or destVec.x, destVec[2] or destVec.y, destVec[3] or destVec.z) or destVec
-    if not destVec then destVec = vector3(playerCoords.x, playerCoords.y, playerCoords.z) end
-    if not isPointOnRoad(destVec.x, destVec.y, destVec.z) then
-        local fallback = getClosestRoadPos(playerCoords.x, playerCoords.y, playerCoords.z, "all") or getClosestMajorRoadPos(playerCoords.x, playerCoords.y, playerCoords.z)
-        if fallback then destVec = fallback end
-    end
-    -- Ensure dest is between spawn and player so the drive path is valid (avoid same spot / behind spawn)
-    local spawnToDest = #(destVec - spawnPos)
-    local spawnToPlayer = #(playerCoords - spawnPos)
-    if spawnToDest < 15.0 or spawnToDest > spawnToPlayer * 1.1 then
-        destVec = spawnPos + (playerCoords - spawnPos) * (math.min(1.0, (spawnToPlayer > 1 and (15.0 / spawnToPlayer) or 1.0)))
-        local _, gz = GetGroundZFor_3dCoord(destVec.x, destVec.y, destVec.z + 10.0, 0)
-        if gz then destVec = vector3(destVec.x, destVec.y, gz) end
-    end
-
-    return spawnPos, destVec, spawnHeadingOut
-end
 
 local function despawnPedAfter(pedEntity, delay)
     CreateThread(function()
@@ -330,7 +122,6 @@ local function cornerDriveOffAndDespawn(pedEntity, vehEntity, flee, pedAlreadyIn
     CreateThread(function()
         if not DoesEntityExist(pedEntity) or not DoesEntityExist(vehEntity) then return end
         SetBlockingOfNonTemporaryEvents(pedEntity, false)
-        -- When curb-serving, ped must stay in car: do NOT clear tasks (clearing can eject them)
         if not pedAlreadyInVeh then
             ClearPedTasksImmediately(pedEntity)
         end
@@ -369,7 +160,6 @@ local function cornerDriveOffAndDespawn(pedEntity, vehEntity, flee, pedAlreadyIn
             SetEntityAsMissionEntity(vehEntity, true, true)
             DeleteEntity(vehEntity)
         end
-        cornerVeh = nil
     end)
 end
 
@@ -383,16 +173,6 @@ local function resetSale()
     if blip then
         RemoveBlip(blip)
         blip = nil
-    end
-    if cornerBlip then
-        RemoveBlip(cornerBlip)
-        cornerBlip = nil
-    end
-    if cornerVeh and DoesEntityExist(cornerVeh) then
-        exports.ox_target:removeLocalEntity(cornerVeh, 'blockwork_window_' .. cornerVeh)
-        SetEntityAsMissionEntity(cornerVeh, true, true)
-        DeleteEntity(cornerVeh)
-        cornerVeh = nil
     end
     selling = false
     canInteract = false
@@ -420,168 +200,12 @@ local function inSellZone()
     return false
 end
 
--- ============================================
--- WINDOW POSITION CALCULATION (TRAFFIC SALE)
--- ============================================
-
-local function getWindowPosition(veh, seatIndex)
-    -- Simplified positioning - use fixed offsets that work for most GTA vehicles
-    -- Position ped RIGHT UP AGAINST the car with forearms on roof/window
-    local offsetX, offsetY, offsetZ = 0.0, 0.0, 0.0
-    
-    -- Seat indices: -1 = driver, 0 = passenger, 1 = rear left, 2 = rear right
-    -- Position ped RIGHT UP AGAINST car - NO GAP - forearms on roof/window
-    -- X: -0.3 to 0.3 = ped body touching car, forearms resting on roof
-    -- Y: Fixed positions for each seat's window area
-    -- Z: 0.4 = window height level
-    if seatIndex == -1 then
-        -- Driver seat - left side, front door window (forearms on car, no gap)
-        offsetX, offsetY, offsetZ = -0.3, -0.4, 0.4
-    elseif seatIndex == 0 then
-        -- Passenger seat - right side, front door window (forearms on car, no gap)
-        offsetX, offsetY, offsetZ = 0.3, -0.4, 0.4
-    elseif seatIndex == 1 then
-        -- Rear left seat - left side, back door window (forearms on car, no gap)
-        offsetX, offsetY, offsetZ = -0.3, -0.8, 0.4
-    elseif seatIndex == 2 then
-        -- Rear right seat - right side, back door window (forearms on car, no gap)
-        offsetX, offsetY, offsetZ = 0.3, -0.8, 0.4
-    end
-    
-    return GetOffsetFromEntityInWorldCoords(veh, offsetX, offsetY, offsetZ)
-end
-
--- ============================================
--- VEHICLE TARGET (BLOCK WORK – CURB SERVE VIA WINDOW)
--- ============================================
--- Ped stays in car; player must third-eye the front driver door to complete deal through window.
-local function addVehicleTargetForBlockWork(veh, ped, drug, qty)
-    exports.ox_target:addLocalEntity(veh, {
-        {
-            name = 'blockwork_window_' .. veh,
-            label = 'Curb Serve (Driver Window)',
-            icon = 'hand-holding-usd',
-            canInteract = function(entity)
-                if not selling or not DoesEntityExist(entity) or not DoesEntityExist(ped) then return false end
-                local driverDoorPos = GetOffsetFromEntityInWorldCoords(entity, -0.9, 0.0, 0.4)
-                local playerPos = GetEntityCoords(PlayerPedId())
-                return #(playerPos - driverDoorPos) <= 2.0
-            end,
-            onSelect = function()
-                local p = PlayerPedId()
-                local coords = GetEntityCoords(p)
-                exports.ox_target:removeLocalEntity(veh, 'blockwork_window_' .. veh)
-                if blip then RemoveBlip(blip) end
-
-                RequestAnimDict("mp_common")
-                while not HasAnimDictLoaded("mp_common") do Wait(10) end
-                ClearPedTasksImmediately(p)
-                TaskPlayAnim(p, "mp_common", "givetake2_a", 8.0, -8.0, -1, 48, 0, false, false, false)
-                Wait(1800)
-                ClearPedTasks(p)
-
-                lib.progressCircle({ duration = 4000, label = "Swapping product with cash...", disable = { move = true } })
-
-                pendingSaleContext = { mode = "corner", ped = ped, veh = veh, drug = drug, qty = qty or 1 }
-                TriggerServerEvent("nbk_drug_dealer:attemptSale", { type = drug, count = qty or 1, coords = coords })
-            end
-        }
-    })
-end
-
--- Server sends one result per attemptSale (percentage-based scam roll is server-side)
-RegisterNetEvent('nbk_drug_dealer:saleResult', function(success, data)
-    local ctx = pendingSaleContext
-    pendingSaleContext = nil
-    if not ctx then
-        DebugPrint("saleResult ignored (no pending context)")
-        return
-    end
-    DebugPrint("saleResult", success and "success" or "fail", ctx.mode, data and (data.declined and "declined" or data.scammed and "scammed" or data.reason) or "")
-
-    if not success then
-        if data and data.declined then
-            lib.notify({ title = "Refused", description = Config.DeclinePhrases[math.random(#Config.DeclinePhrases)], type = "error" })
-            if data.coords then
-                TriggerServerEvent('nbk_drug_dealer:sendDispatch', data.coords, '10-71 - Drug Refusal', 'A junkie refused to buy from a local dealer.', '10-71 - Drug Refusal')
-            end
-        elseif data and data.scammed then
-            lib.notify({ title = "Scammed!", description = "This shit mine!", type = "error" })
-            if data.coords then
-                TriggerServerEvent('nbk_drug_dealer:sendDispatch', data.coords, '10-71 - Drug Scam', 'A junkie scammed a local dealer.', '10-71 - Drug Scam')
-            end
-        end
-        selling = false
-        local p = ctx.ped
-        local v = ctx.veh
-        local flee = data and data.scammed
-        if ctx.mode == "corner" and p and v and DoesEntityExist(p) and DoesEntityExist(v) then
-            cornerDriveOffAndDespawn(p, v, flee, true)
-        elseif ctx.mode == "ped" and p and DoesEntityExist(p) then
-            if v and DoesEntityExist(v) then
-                cornerDriveOffAndDespawn(p, v, flee)
-            else
-                if flee then TaskSmartFleePed(p, PlayerPedId(), 100.0, -1) else TaskWanderStandard(p, 10.0, 10) end
-                despawnPedAfter(p, 15000)
-            end
-            currentDropoffDrug = nil
-            currentDropoffCount = 0
-            currentDropoffLoc = nil
-            dropoffPedSpawned = false
-        elseif ctx.mode == "seat" and p and DoesEntityExist(p) then
-            if flee then
-                TaskSmartFleePed(p, PlayerPedId(), 100.0, -1)
-            else
-                if v and DoesEntityExist(v) then TaskLeaveVehicle(p, v, 0) end
-                TaskWanderStandard(p, 10.0, 10)
-            end
-            despawnPedAfter(p, 10000)
-        end
-        ped = nil
-        return
-    end
-
-    selling = false
-    local currentPed = ctx.ped
-    ped = nil
-    currentDropoffDrug = nil
-    currentDropoffCount = 0
-    currentDropoffLoc = nil
-    dropoffPedSpawned = false
-    if ctx.mode == "corner" and currentPed and ctx.veh and DoesEntityExist(currentPed) and DoesEntityExist(ctx.veh) then
-        cornerDriveOffAndDespawn(currentPed, ctx.veh, false, true)
-    elseif ctx.mode == "ped" and currentPed and DoesEntityExist(currentPed) then
-        if mode == "traffic" and ctx.veh and DoesEntityExist(ctx.veh) then
-            local vehCoords = GetEntityCoords(ctx.veh)
-            local vehHeading = GetEntityHeading(ctx.veh)
-            local rad = math.rad(vehHeading)
-            local awayX = vehCoords.x - math.sin(rad) * 50.0
-            local awayY = vehCoords.y + math.cos(rad) * 50.0
-            local _, awayZ = GetGroundZFor_3dCoord(awayX, awayY, vehCoords.z, 0)
-            if not awayZ then awayZ = vehCoords.z end
-            TaskGoToCoordAnyMeans(currentPed, awayX, awayY, awayZ, 1.0, 0, 0, 786603, 0xbf800000)
-            despawnPedAfter(currentPed, 15000)
-        elseif ctx.veh and DoesEntityExist(ctx.veh) then
-            cornerDriveOffAndDespawn(currentPed, ctx.veh, false)
-        else
-            TaskWanderStandard(currentPed, 10.0, 10)
-            despawnPedAfter(currentPed, 15000)
-        end
-    elseif ctx.mode == "seat" and currentPed and ctx.veh and DoesEntityExist(currentPed) and DoesEntityExist(ctx.veh) then
-        TaskLeaveVehicle(currentPed, ctx.veh, 0)
-        Wait(1500)
-        SetVehicleDoorsShut(ctx.veh, false)
-        Wait(2000)
-        TaskWanderStandard(currentPed, 10.0, 10)
-        despawnPedAfter(currentPed, 10000)
-    end
-end)
 
 -- ============================================
 -- PED TARGET INTERACTION
 -- ============================================
 
-local function addPedTarget(pedEntity, drug, qty, mode, vehicle, windowCoords)
+local function addPedTarget(pedEntity, drug, qty, vehicle)
     if not pedEntity or not DoesEntityExist(pedEntity) then
         DebugPrint("addPedTarget skipped (invalid ped)")
         return
@@ -589,14 +213,13 @@ local function addPedTarget(pedEntity, drug, qty, mode, vehicle, windowCoords)
     exports.ox_target:addLocalEntity(pedEntity, {
         {
             name = 'drug_confirm_' .. pedEntity,
-            label = mode == 'dropoff' and 'Confirm Drop-Off' or (mode == 'traffic' and 'Make Deal' or 'Confirm Sale'),
+            label = 'Confirm Drop-Off',
             icon = 'hand-holding-usd',
             canInteract = function(entity)
                 return selling and DoesEntityExist(entity)
             end,
             onSelect = function()
                 local p = PlayerPedId()
-                local coords = GetEntityCoords(p)
                 exports.ox_target:removeLocalEntity(pedEntity, 'drug_confirm_' .. pedEntity)
                 if blip then RemoveBlip(blip) end
 
@@ -607,41 +230,26 @@ local function addPedTarget(pedEntity, drug, qty, mode, vehicle, windowCoords)
                 Wait(1800)
                 ClearPedTasks(p)
 
-                -- Freeze ped during transaction if traffic mode
-                if mode == 'traffic' and DoesEntityExist(pedEntity) then
-                    FreezeEntityPosition(pedEntity, true)
-                end
-
                 lib.progressCircle({
                     duration = 4000,
-                    label = mode == 'dropoff' and "Delivering product..." or "Swapping product with cash...",
+                    label = "Delivering product...",
                     disable = { move = true }
                 })
 
-                -- Unfreeze ped after transaction
-                if mode == 'traffic' and DoesEntityExist(pedEntity) then
-                    FreezeEntityPosition(pedEntity, false)
-                end
-
-                if mode == 'dropoff' then
-                    TriggerServerEvent("nbk_drug_dealer:completeDropOff", drug, qty)
-                    selling = false
-                    ped = nil
-                    currentDropoffDrug = nil
-                    currentDropoffCount = 0
-                    currentDropoffLoc = nil
-                    dropoffPedSpawned = false
-                    if DoesEntityExist(pedEntity) then
-                        if vehicle and DoesEntityExist(vehicle) then
-                            cornerDriveOffAndDespawn(pedEntity, vehicle, false)
-                        else
-                            TaskWanderStandard(pedEntity, 10.0, 10)
-                            despawnPedAfter(pedEntity, 15000)
-                        end
+                TriggerServerEvent("nbk_drug_dealer:completeDropOff", drug, qty)
+                selling = false
+                ped = nil
+                currentDropoffDrug = nil
+                currentDropoffCount = 0
+                currentDropoffLoc = nil
+                dropoffPedSpawned = false
+                if DoesEntityExist(pedEntity) then
+                    if vehicle and DoesEntityExist(vehicle) then
+                        cornerDriveOffAndDespawn(pedEntity, vehicle, false)
+                    else
+                        TaskWanderStandard(pedEntity, 10.0, 10)
+                        despawnPedAfter(pedEntity, 15000)
                     end
-                else
-                    pendingSaleContext = { mode = "ped", ped = pedEntity, veh = vehicle, drug = drug, qty = qty or 1 }
-                    TriggerServerEvent("nbk_drug_dealer:attemptSale", { type = drug, count = qty or 1, coords = coords })
                 end
             end
         }
@@ -673,8 +281,6 @@ RegisterCommand("dealer", function()
             title = "select a way to move your product",
             description = "Select your selling method",
             options = {
-                { title = "Trap From Whip", description = "Sell from inside your car (any seat; NPC takes a free seat).", icon = "car", event = "nbk:selectMode", args = { m = "curb" } },
-                { title = "Block Work", description = "Junkie runs up to you. Third-eye to complete deal.", icon = "walking", event = "nbk:selectMode", args = { m = "corner" } },
                 { title = "Drop-Off Product", description = "Drive to meet point; exit car to deliver.", icon = "map-marker-alt", event = "nbk:selectMode", args = { m = "dropoff" } }
             }
         })
@@ -683,11 +289,6 @@ RegisterCommand("dealer", function()
 end)
 
 AddEventHandler("nbk:selectMode", function(data)
-    if data.m == "corner" and IsPedInAnyVehicle(PlayerPedId(), false) then
-        lib.notify({ title = "Block Work", description = "Exit your vehicle to sell on foot.", type = "error" })
-        return
-    end
-
     mode = data.m
     lib.callback("nbk_drug_dealer:getPlayerDrugs", false, function(drugs)
         if #drugs == 0 then
@@ -705,7 +306,7 @@ AddEventHandler("nbk:selectMode", function(data)
         end
 
         if #retailDrugs == 0 then
-            lib.notify({ title = "Dealer", description = "You don't have any retail products to sell. Bust down your wholesale items first.", type = "error" })
+            lib.notify({ title = "Dealer", description = "You don't have any products to drop off. Bust down your wholesale items first.", type = "error" })
             return
         end
 
@@ -733,455 +334,9 @@ end)
 AddEventHandler("nbk:startSale", function(data)
     if not data.drug then return end
 
-    if mode == "curb" then
-        TriggerEvent("nbk:curbSale", data.drug)
-    elseif mode == "corner" then
-        TriggerEvent("nbk:cornerSale", data.drug)
-    elseif mode == "dropoff" then
-        local qty = math.random(Config.DropOffMinQty, Config.DropOffMaxQty)
-        qty = math.min(qty, data.count)
-        TriggerEvent("nbk:dropOffSale", { drug = data.drug, qty = qty, count = data.count })
-    end
-end)
-
--- ============================================
--- TRAFFIC SALE (NEW - ANY SEAT)
--- ============================================
-
-AddEventHandler("nbk:trafficSale", function(drug)
-    local p = PlayerPedId()
-    local veh = GetVehiclePedIsIn(p, false)
-    
-    if not veh or veh == 0 then
-        lib.notify({ title = "Traffic Selling", description = "You must be in a vehicle.", type = "error" })
-        return
-    end
-
-    -- Reset any existing sale
-    if selling then
-        resetSale()
-        if blip then RemoveBlip(blip) end
-    end
-
-    -- Find which seat player is in
-    local currentSeatIndex = nil
-    for seat = -1, 2 do
-        if GetPedInVehicleSeat(veh, seat) == p then
-            currentSeatIndex = seat
-            break
-        end
-    end
-
-    if not currentSeatIndex then
-        lib.notify({ title = "Traffic Selling", description = "Could not determine your seat.", type = "error" })
-        return
-    end
-
-    Wait(100)
-
-    lib.notify({ title = "Traffic Selling", description = "Serve is approaching, stay in vehicle.", type = "inform" })
-
-    -- Calculate window position based on seat
-    local windowCoords = getWindowPosition(veh, currentSeatIndex)
-    local windowX, windowY, windowZ = windowCoords.x, windowCoords.y, windowCoords.z
-    local _, windowGz = GetGroundZFor_3dCoord(windowX, windowY, windowZ, 0)
-    if not windowGz then windowGz = windowZ end
-
-    -- Spawn ped near the window (on the correct side of car)
-    local vehCoords = GetEntityCoords(veh)
-    local vehHeading = GetEntityHeading(veh)
-    local spawnDistance = math.random(3, 8)
-    local sideDistance = math.random(1, 2)
-    
-    local spawnOffsetX, spawnOffsetY = 0.0, 0.0
-    if currentSeatIndex == -1 or currentSeatIndex == 1 then
-        -- Left side - spawn on left
-        spawnOffsetX = -sideDistance
-    else
-        -- Right side - spawn on right
-        spawnOffsetX = sideDistance
-    end
-    
-    local rad = math.rad(vehHeading)
-    local spawnX = windowX + math.cos(rad) * spawnDistance + math.sin(rad) * spawnOffsetX
-    local spawnY = windowY + math.sin(rad) * spawnDistance - math.cos(rad) * spawnOffsetX
-    local spawnZ = windowGz
-    
-    local _, spawnGz = GetGroundZFor_3dCoord(spawnX, spawnY, spawnZ + 5.0, 0)
-    if not spawnGz then spawnGz = spawnZ end
-
-    -- Spawn ped
-    local m = Config.JunkiePeds[math.random(#Config.JunkiePeds)]
-    local pedHash = GetHashKey(m)
-    RequestModel(pedHash)
-    local modelTimeout = 0
-    while not HasModelLoaded(pedHash) and modelTimeout < 5000 do
-        Wait(10)
-        modelTimeout = modelTimeout + 10
-    end
-
-    if not HasModelLoaded(pedHash) then
-        lib.notify({ title = "Traffic Selling", description = "Failed to load ped model.", type = "error" })
-        return
-    end
-
-    ped = CreatePed(4, pedHash, spawnX, spawnY, spawnGz, 0.0, true, true)
-    
-    if not ped or ped == 0 then
-        -- Fallback: spawn near player and teleport
-        ped = CreatePed(4, pedHash, vehCoords.x + 5.0, vehCoords.y + 5.0, vehCoords.z, 0.0, true, true)
-        if ped and ped ~= 0 then
-            SetEntityCoords(ped, spawnX, spawnY, spawnGz, false, false, false, true)
-        end
-    end
-
-    if not ped or ped == 0 then
-        lib.notify({ title = "Traffic Selling", description = "Failed to spawn buyer.", type = "error" })
-        return
-    end
-
-    SetBlockingOfNonTemporaryEvents(ped, true)
-    SetPedFleeAttributes(ped, 0, false)
-    SetPedCombatAttributes(ped, 17, true)
-    SetPedCanRagdollFromPlayerImpact(ped, false)
-    SetPedCanRagdoll(ped, false)
-    SetEntityInvincible(ped, true)
-    SetEntityAsMissionEntity(ped, true, true)
-    SetPedKeepTask(ped, true)
-    SetEntityCollision(ped, true, true)
-    SetEntityVisible(ped, true, false)
-
-    -- Blip for window location
-    blip = AddBlipForCoord(windowX, windowY, windowGz)
-    SetBlipSprite(blip, 280)
-    SetBlipColour(blip, 3)
-    SetBlipRoute(blip, true)
-
-    selling = true
-
-    -- Make ped walk to window
-    TaskGoToCoordAnyMeans(ped, windowX, windowY, windowGz, 1.0, 0, 0, 786603, 0xbf800000)
-
-    CreateThread(function()
-        local pedAtWindow = false
-        while selling do
-            Wait(500)
-            
-            if not DoesEntityExist(ped) or not DoesEntityExist(veh) or not IsPedInAnyVehicle(p, false) then
-                if not IsPedInAnyVehicle(p, false) then
-                    lib.notify({ title = 'Traffic Selling', description = 'You left the vehicle, deal canceled.', type = 'error' })
-                end
-                selling = false
-                if DoesEntityExist(ped) then
-                    local currentPed = ped
-                    ped = nil
-                    despawnPedAfter(currentPed, 10000)
-                end
-                if blip then RemoveBlip(blip) end
-                return
-            end
-
-            local pedPos = GetEntityCoords(ped)
-            local distanceToWindow = #(pedPos - vector3(windowX, windowY, windowGz))
-
-            if not pedAtWindow and distanceToWindow < 2.0 then
-                pedAtWindow = true
-                RemoveBlip(blip)
-                
-                -- Snap ped to exact window position
-                SetEntityCoords(ped, windowX, windowY, windowGz, false, false, false, true)
-                
-                -- Make ped face directly toward the car door - perpendicular to vehicle
-                -- Body/chest should be squared up with the car, facing the door
-                local vehHeading = GetEntityHeading(veh)
-                local pedHeading
-                
-                if currentSeatIndex == -1 or currentSeatIndex == 1 then
-                    -- Driver side or rear left - ped on left side, faces right (90° from vehicle heading)
-                    -- This makes ped face directly toward the car door
-                    pedHeading = (vehHeading + 90.0) % 360.0
-                else
-                    -- Passenger side or rear right - ped on right side, faces left (270° or -90° from vehicle heading)
-                    -- This makes ped face directly toward the car door
-                    pedHeading = (vehHeading - 90.0) % 360.0
-                end
-                
-                SetEntityHeading(ped, pedHeading)
-                Wait(100)
-                
-                -- Play the correct animation - ensure it loops
-                RequestAnimDict("anim@amb@yacht@rail@standing@female@variant_01@")
-                local animTimeout = 0
-                while not HasAnimDictLoaded("anim@amb@yacht@rail@standing@female@variant_01@") and animTimeout < 3000 do
-                    Wait(10)
-                    animTimeout = animTimeout + 10
-                end
-                
-                if HasAnimDictLoaded("anim@amb@yacht@rail@standing@female@variant_01@") then
-                    TaskPlayAnim(ped, "anim@amb@yacht@rail@standing@female@variant_01@", "base", 8.0, -8.0, -1, 1, 0, false, false, false)
-                end
-                
-                -- Add target interaction with vehicle and window coords
-                addPedTarget(ped, drug, 1, "traffic", veh, vector3(windowX, windowY, windowGz))
-            elseif not pedAtWindow then
-                -- Keep ped moving to window
-                TaskGoToCoordAnyMeans(ped, windowX, windowY, windowGz, 1.0, 0, 0, 786603, 0xbf800000)
-            end
-        end
-    end)
-end)
-
--- ============================================
--- CURB SALE (TRAP FROM WHIP – ANY SEAT, NPC TAKES OPEN PASSENGER SEAT)
--- ============================================
-
-AddEventHandler("nbk:curbSale", function(drug)
-    local p = PlayerPedId()
-    local veh = GetVehiclePedIsIn(p, false)
-    if not veh or veh == 0 then
-        lib.notify({ title = "Trap From Whip", description = "You must be in a vehicle.", type = "error" })
-        return
-    end
-
-    -- Require at least one free passenger seat so NPC can get in
-    local freeSeats = {}
-    for _, seat in ipairs({ 0, 1, 2 }) do
-        if IsVehicleSeatFree(veh, seat) then
-            freeSeats[#freeSeats + 1] = seat
-        end
-    end
-    if #freeSeats == 0 then
-        lib.notify({ title = "Trap From Whip", description = "No free passenger seat for a serve.", type = "error" })
-        return
-    end
-
-    lib.notify({ title = "Trap From Whip", description = "Serve is approaching, stay in vehicle.", type = "inform" })
-
-    -- Spawn and path from VEHICLE position/heading so it works from any seat (driver or passenger)
-    local vCoords = GetEntityCoords(veh)
-    local vHeading = GetEntityHeading(veh)
-    local rad = math.rad(vHeading)
-    local dist = 15.0 + math.random() * 25.0
-    local spawnX = vCoords.x - math.sin(rad) * dist
-    local spawnY = vCoords.y + math.cos(rad) * dist
-    local _, gz = GetGroundZFor_3dCoord(spawnX, spawnY, vCoords.z + 5.0, 0)
-    if not gz then gz = vCoords.z end
-
-    -- Target: spot in front of vehicle so ped runs to car, then enters (works for any player seat)
-    local approachDist = 4.0
-    local approachX = vCoords.x - math.sin(rad) * approachDist
-    local approachY = vCoords.y + math.cos(rad) * approachDist
-    local _, approachGz = GetGroundZFor_3dCoord(approachX, approachY, vCoords.z + 2.0, 0)
-    if not approachGz then approachGz = vCoords.z end
-
-    ensureCollisionLoadedAt(spawnX, spawnY, gz)
-    ensureCollisionLoadedAt(approachX, approachY, approachGz)
-    Wait(100)
-
-    local m = Config.JunkiePeds[math.random(#Config.JunkiePeds)]
-    local pedHash = GetHashKey(m)
-    RequestModel(pedHash)
-    local modelTimeout = 0
-    while not HasModelLoaded(pedHash) and modelTimeout < 5000 do Wait(10) modelTimeout = modelTimeout + 10 end
-    if not HasModelLoaded(pedHash) then
-        lib.notify({ title = "Trap From Whip", description = "Failed to load buyer model.", type = "error" })
-        return
-    end
-
-    ped = CreatePed(4, pedHash, spawnX, spawnY, gz, 0.0, true, true)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then
-        DebugPrint("Trap from whip ped spawn failed", ped)
-        lib.notify({ title = "Trap From Whip", description = "Failed to spawn buyer.", type = "error" })
-        return
-    end
-    DebugPrint("Trap from whip ped spawned", ped)
-    ClearPedTasksImmediately(ped)
-    SetBlockingOfNonTemporaryEvents(ped, false)
-    SetEntityAsMissionEntity(ped, true, true)
-    -- Run to spot in front of vehicle so pathfinding works from any seat
-    TaskGoToCoordAnyMeans(ped, approachX, approachY, approachGz, 2.0, 0, 0, 786603, 0xbf800000)
-
-    blip = AddBlipForCoord(approachX, approachY, approachGz)
-    SetBlipSprite(blip, 280)
-    SetBlipColour(blip, 3)
-    SetBlipRoute(blip, true)
-
-    selling = true
-    local entered = false
-    local lastEnterAttempt = 0
-    local lastGotoTime = 0
-
-    CreateThread(function()
-        while selling do
-            Wait(400)
-            if not DoesEntityExist(ped) or not DoesEntityExist(veh) then
-                selling = false
-                if DoesEntityExist(ped) then despawnPedAfter(ped, 10000) end
-                ped = nil
-                if blip then RemoveBlip(blip) blip = nil end
-                return
-            end
-            if not IsPedInAnyVehicle(p, false) then
-                lib.notify({ title = "Trap From Whip", description = "You left the vehicle, deal canceled.", type = "error" })
-                selling = false
-                local currentPed = ped
-                ped = nil
-                despawnPedAfter(currentPed, 10000)
-                if blip then RemoveBlip(blip) blip = nil end
-                return
-            end
-
-            local pedPos = GetEntityCoords(ped)
-            local vehPos = GetEntityCoords(veh)
-            local distToVeh = #(pedPos - vehPos)
-            local now = GetGameTimer()
-
-            -- Re-issue goto every 3s if ped not at vehicle (stuck detection)
-            if distToVeh >= 3.0 and not IsPedInVehicle(ped, veh, false) and (now - lastGotoTime) >= 3000 then
-                lastGotoTime = now
-                local ax = vCoords.x - math.sin(rad) * approachDist
-                local ay = vCoords.y + math.cos(rad) * approachDist
-                local _, agz = GetGroundZFor_3dCoord(ax, ay, vehPos.z + 2.0, 0)
-                if not agz then agz = vehPos.z end
-                ClearPedTasks(ped)
-                Wait(50)
-                TaskGoToCoordAnyMeans(ped, ax, ay, agz, 2.0, 0, 0, 786603, 0xbf800000)
-            end
-
-            -- When ped is close to vehicle, tell them to enter (retry every 2s if not in yet)
-            if distToVeh < 8.0 and not IsPedInVehicle(ped, veh, false) then
-                if not entered or (now - lastEnterAttempt) >= 2000 then
-                    lastEnterAttempt = now
-                    entered = true
-                    local seatToUse = nil
-                    for _, s in ipairs({ 0, 1, 2 }) do
-                        if IsVehicleSeatFree(veh, s) then seatToUse = s break end
-                    end
-                    if seatToUse ~= nil then
-                        ClearPedTasks(ped)
-                        Wait(100)
-                        TaskEnterVehicle(ped, veh, -1, seatToUse, 2.0, 1, 0)
-                    end
-                end
-            end
-
-            if IsPedInVehicle(ped, veh, false) then
-                if blip then RemoveBlip(blip) blip = nil end
-                lib.progressCircle({ duration = 5000, label = "Handing serve the product...", disable = { move = true } })
-
-                local sellAmount = math.random(1, 3)
-                pendingSaleContext = { mode = "seat", ped = ped, veh = veh, drug = drug }
-                selling = false
-                TriggerServerEvent("nbk_drug_dealer:attemptSale", {
-                    type = drug,
-                    count = sellAmount,
-                    coords = GetEntityCoords(p)
-                })
-                return
-            end
-        end
-    end)
-end)
-
--- ============================================
--- CORNER SALE (ON FOOT)
--- ============================================
-
-AddEventHandler("nbk:cornerSale", function(drug)
-    local p = PlayerPedId()
-
-    if selling then resetSale() end
-
-    FreezeEntityPosition(p, true)
-
-    RequestAnimDict("cellphone@")
-    while not HasAnimDictLoaded("cellphone@") do Wait(10) end
-
-    local phoneModel = GetHashKey("prop_v_m_phone_o1s")
-    RequestModel(phoneModel)
-    while not HasModelLoaded(phoneModel) do Wait(10) end
-
-    local phone = CreateObject(phoneModel, 1.0, 1.0, 1.0, true, true, false)
-    AttachEntityToEntity(phone, p, GetPedBoneIndex(p, 28422), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, true, true, false, true, 1, true)
-    TaskPlayAnim(p, "cellphone@", "cellphone_text_read_base", 8.0, -1, -1, 49, 0, false, false, false)
-
-    lib.progressCircle({ duration = 4000, label = "Finding buyer...", disable = { move = true } })
-    ClearPedTasks(p)
-    DeleteEntity(phone)
-    FreezeEntityPosition(p, false)
-
-    local c = GetEntityCoords(p)
-    local heading = GetEntityHeading(p)
-    -- Load collision at player and spawn so pathfinding works (fixes peds standing still on MLO/custom maps)
-    ensureCollisionLoadedAt(c.x, c.y, c.z)
-    local dist = 15.0 + math.random() * 25.0
-    local angle = math.rad(heading + (math.random() * 120.0 - 60.0))
-    local sx = c.x + math.cos(angle) * dist
-    local sy = c.y + math.sin(angle) * dist
-    local _, sz = GetGroundZFor_3dCoord(sx, sy, c.z + 20.0, 0)
-    if not sz then sz = c.z end
-    ensureCollisionLoadedAt(sx, sy, sz)
-    Wait(100)
-
-    local pedModel = Config.JunkiePeds[math.random(#Config.JunkiePeds)]
-    local pedHash = type(pedModel) == "string" and GetHashKey(pedModel) or pedModel
-    RequestModel(pedHash)
-    local modelTimeout = 0
-    while not HasModelLoaded(pedHash) and modelTimeout < 5000 do Wait(10) modelTimeout = modelTimeout + 10 end
-    if not HasModelLoaded(pedHash) then
-        lib.notify({ title = "Block Work", description = "Failed to load buyer model.", type = "error" })
-        return
-    end
-
-    ped = CreatePed(4, pedHash, sx, sy, sz, 0.0, true, false)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then
-        DebugPrint("Block work ped spawn failed", ped)
-        lib.notify({ title = "Block Work", description = "Failed to spawn buyer.", type = "error" })
-        return
-    end
-    DebugPrint("Block work ped spawned", ped)
-    SetEntityAsMissionEntity(ped, true, true)
-    SetBlockingOfNonTemporaryEvents(ped, false)
-    ClearPedTasksImmediately(ped)
-    -- Use coord-based goto so ped actually moves (TaskGoToEntity can fail on custom maps)
-    local stopRange = 2.5
-    TaskGoToCoordAnyMeans(ped, c.x, c.y, c.z, 2.0, 0, 0, 786603, 0xbf800000)
-    -- Stuck detection: re-issue goto to current player pos every 6s if ped hasn't reached player (use PlayerPedId() so respawn-safe)
-    CreateThread(function()
-        local lastDist = 999.0
-        while selling do
-            Wait(6000)
-            if not selling then break end
-            local myPed = PlayerPedId()
-            if not DoesEntityExist(ped) or not DoesEntityExist(myPed) then break end
-            local pedPos = GetEntityCoords(ped)
-            local playerPos = GetEntityCoords(myPed)
-            local d = #(pedPos - playerPos)
-            if d > stopRange and d >= lastDist - 0.5 then
-                DebugPrint("Block work ped stuck, re-issuing goto", d)
-                ClearPedTasks(ped)
-                Wait(100)
-                TaskGoToCoordAnyMeans(ped, playerPos.x, playerPos.y, playerPos.z, 2.0, 0, 0, 786603, 0xbf800000)
-            end
-            lastDist = d
-        end
-    end)
-
-    if blip then RemoveBlip(blip) end
-    blip = AddBlipForEntity(ped)
-    SetBlipSprite(blip, 280)
-    SetBlipColour(blip, 3)
-    SetBlipScale(blip, 0.85)
-    BeginTextCommandSetBlipName("STRING")
-    AddTextComponentString("Serve")
-    EndTextCommandSetBlipName(blip)
-
-    selling = true
-    local qty = math.random(3, 5)
-    if DoesEntityExist(ped) then
-        addPedTarget(ped, drug, qty, "corner", nil, nil)
-    end
-    lib.notify({ title = "Block Work", description = "Junkie is on the way. Third-eye when they get here.", type = "inform", duration = 6000 })
+    local qty = math.random(Config.DropOffMinQty, Config.DropOffMaxQty)
+    qty = math.min(qty, data.count)
+    TriggerEvent("nbk:dropOffSale", { drug = data.drug, qty = qty, count = data.count })
 end)
 
 -- ============================================
@@ -1280,7 +435,7 @@ AddEventHandler("nbk:dropOffSale", function(data)
                         SetBlockingOfNonTemporaryEvents(ped, true)
                         FreezeEntityPosition(ped, true)
                         TaskStandStill(ped, -1)
-                        addPedTarget(ped, currentDropoffDrug, currentDropoffQty, "dropoff")
+                        addPedTarget(ped, currentDropoffDrug, currentDropoffQty, nil)
                         lib.notify({ title = "Drop-Off", description = "Serve is here. Third-eye to complete the deal.", type = "success" })
                     end
                     break
@@ -1292,7 +447,7 @@ AddEventHandler("nbk:dropOffSale", function(data)
         currentDropoffCount = data.count or qty
         currentDropoffQty = qty
         if DoesEntityExist(ped) and dropoffPedSpawned then
-            addPedTarget(ped, drug, qty, "dropoff")
+            addPedTarget(ped, drug, qty, nil)
         end
     end
 end)
