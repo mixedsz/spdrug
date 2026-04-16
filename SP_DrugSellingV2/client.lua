@@ -234,8 +234,10 @@ local function addPedTarget(pedEntity, drug, qty, vehicle)
                     if vehicle and DoesEntityExist(vehicle) then
                         cornerDriveOffAndDespawn(pedEntity, vehicle, false)
                     else
+                        FreezeEntityPosition(pedEntity, false)
+                        SetBlockingOfNonTemporaryEvents(pedEntity, false)
                         TaskWanderStandard(pedEntity, 10.0, 10)
-                        despawnPedAfter(pedEntity, 15000)
+                        despawnPedAfter(pedEntity, 5000)
                     end
                 end
             end
@@ -446,7 +448,16 @@ AddEventHandler("nbk:dropOffSale", function(data)
             local pedModel = Config.JunkiePeds[math.random(#Config.JunkiePeds)]
             local pedHash = GetHashKey(pedModel)
             RequestModel(pedHash)
-            while not HasModelLoaded(pedHash) do Wait(10) end
+            -- Cap model loading at 10 seconds so the thread doesn't hang forever
+            local modelWait = 0
+            while not HasModelLoaded(pedHash) and modelWait < 10000 do
+                Wait(10)
+                modelWait = modelWait + 10
+            end
+            if not HasModelLoaded(pedHash) then
+                DebugPrint("Drop-off ped model failed to load: " .. pedModel)
+                return
+            end
 
             while selling and currentDropoffLoc and currentDropoffDrug and not dropoffPedSpawned do
                 Wait(500)
@@ -454,15 +465,21 @@ AddEventHandler("nbk:dropOffSale", function(data)
                 local dist = #(playerPos - currentDropoffLoc)
                 if dist < 30.0 then
                     dropoffPedSpawned = true
-                    local loc = currentDropoffLoc
-                    -- Spawn on nearest major road (black road), not sidewalk (parking lots OK)
-                    local roadPos = getClosestMajorRoadPos(loc.x, loc.y, loc.z)
+                    local spawnLoc = currentDropoffLoc
+
+                    -- Pre-load collision so road-node queries return valid data
+                    ensureCollisionLoadedAt(spawnLoc.x, spawnLoc.y, spawnLoc.z)
+                    Wait(150)
+
+                    -- Try to find nearest road; fall back to the raw drop-off coord
+                    local roadPos = getClosestMajorRoadPos(spawnLoc.x, spawnLoc.y, spawnLoc.z)
                     if not roadPos then
-                        roadPos = getClosestRoadPos(loc.x, loc.y, loc.z, NODE_TYPE_PAVED_ROAD)
+                        roadPos = getClosestRoadPos(spawnLoc.x, spawnLoc.y, spawnLoc.z, NODE_TYPE_PAVED_ROAD)
                     end
-                    local spawnX = roadPos.x
-                    local spawnY = roadPos.y
-                    local spawnZ = roadPos.z
+                    local spawnX = roadPos and roadPos.x or spawnLoc.x
+                    local spawnY = roadPos and roadPos.y or spawnLoc.y
+                    local spawnZ = roadPos and roadPos.z or spawnLoc.z
+
                     ped = CreatePed(4, pedHash, spawnX, spawnY, spawnZ, 0.0, true, true)
                     if ped and ped ~= 0 then
                         SetEntityAsMissionEntity(ped, true, true)
@@ -471,6 +488,9 @@ AddEventHandler("nbk:dropOffSale", function(data)
                         TaskStandStill(ped, -1)
                         addPedTarget(ped, currentDropoffDrug, currentDropoffQty, nil)
                         lib.notify({ title = "Drop-Off", description = "Serve is here. Third-eye to complete the deal.", type = "success" })
+                    else
+                        DebugPrint("Drop-off ped CreatePed returned 0 — spawn failed at " .. spawnX .. "," .. spawnY .. "," .. spawnZ)
+                        dropoffPedSpawned = false -- Allow retry
                     end
                     break
                 end
