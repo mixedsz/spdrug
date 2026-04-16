@@ -60,6 +60,49 @@ lib.callback.register('nbk_drug_dealer:hasItem', function(source, itemName)
     return count > 0
 end)
 
+-- Returns true if the player's job matches any recipe's required job (used to gate the plug crafting menu)
+lib.callback.register('nbk_drug_dealer:isPlug', function(source)
+    local xPlayer = GetPlayer(source)
+    if not xPlayer or not Config.CraftingRecipes then return false end
+    local job = xPlayer.job.name
+    for _, recipe in ipairs(Config.CraftingRecipes) do
+        if recipe.job and job == recipe.job then return true end
+    end
+    return false
+end)
+
+-- Validates job + all ingredients for a plug recipe BEFORE the client starts the progress timer.
+-- Returns true if everything is OK; sends its own error notification and returns false otherwise.
+lib.callback.register('nbk_drug_dealer:checkPlugRecipe', function(source, recipeIndex)
+    local xPlayer = GetPlayer(source)
+    if not xPlayer then return false end
+
+    local recipe = Config.CraftingRecipes and Config.CraftingRecipes[recipeIndex]
+    if not recipe then
+        TriggerClientEvent('ox_lib:notify', source, { title = 'Crafting', description = 'Invalid recipe.', type = 'error' })
+        return false
+    end
+
+    if recipe.job and xPlayer.job.name ~= recipe.job then
+        TriggerClientEvent('ox_lib:notify', source, { title = 'Crafting', description = 'You need the ' .. recipe.job .. ' job.', type = 'error' })
+        return false
+    end
+
+    for _, ing in ipairs(recipe.ingredients) do
+        local have = exports.ox_inventory:Search(source, 'count', ing.item) or 0
+        if have < ing.count then
+            TriggerClientEvent('ox_lib:notify', source, {
+                title       = 'Crafting',
+                description = ('Missing: %dx %s (have %d).'):format(ing.count, ing.item, have),
+                type        = 'error',
+            })
+            return false
+        end
+    end
+
+    return true
+end)
+
 -- Returns whether the player's job allows crafting at the given zone
 lib.callback.register('nbk_drug_dealer:canCraftAtZone', function(source, zoneName)
     local xPlayer = GetPlayer(source)

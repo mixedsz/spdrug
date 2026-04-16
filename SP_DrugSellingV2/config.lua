@@ -825,7 +825,17 @@ Config.CraftingRecipes = {
 }
 
 -- ============================================
--- JOB-BASED CRAFTING (NUI AT COORDS)
+-- PLUG CRAFTING SPOTS
+-- ============================================
+-- Coordinates where players with the plug job can access the CraftingRecipes above.
+-- Add or remove entries as needed. Each spot shows a marker and [E] prompt.
+-- REPLACE these with your actual server locations.
+Config.PlugCraftingCoords = {
+    vector3(-47.52, -1757.54, 29.42),   -- Example: Davis stash spot
+    vector3(354.76, -1580.90, 29.29),   -- Example: Strawberry spot
+}
+
+
 -- All additems (output) must exist in ox_inventory items (e.g. items.lua or ox_inventory data).
 -- Job name must match the key in jobs (e.g. job "maleekdrug" for zone maleekdrug).
 -- ============================================

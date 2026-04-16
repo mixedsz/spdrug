@@ -1536,6 +1536,10 @@ local lastCraftingEKey = 0
 local craftingZoneCache = {} -- zoneName -> { canCraft = bool, at = gameTimer }
 local CRAFTING_CACHE_MS = 1500
 
+-- Plug crafting spot state (declared here so onResourceStop can see them)
+local plugCraftShowingTextUI = false
+local lastPlugCraftEKey      = 0
+
 local function openCraftingMenu(zoneName, craftingData)
     if isCraftingUIOpen or not zoneName or not craftingData or not craftingData.items then return end
     isCraftingUIOpen = true
@@ -1717,6 +1721,7 @@ AddEventHandler("onResourceStop", function(resourceName)
     if GetCurrentResourceName() ~= resourceName then return end
     if isCraftingUIOpen then SetNuiFocus(false, false) end
     if craftingShowingTextUI then lib.hideTextUI() end
+    if plugCraftShowingTextUI then lib.hideTextUI() end
 end)
 
 -- ============================================
@@ -1732,17 +1737,150 @@ RegisterNetEvent('nbk_drug_dealer:startCrafting', function(recipeIndex)
     local recipe = Config.CraftingRecipes[recipeIndex]
     if not recipe then return end
 
+    -- Pre-validate job + ingredients before starting the timer.
+    -- Server sends its own error notification if anything is missing.
+    local ok = lib.callback.await('nbk_drug_dealer:checkPlugRecipe', false, recipeIndex)
+    if not ok then return end
+
     craftingActive = true
+
+    local resultLabel = recipe.result.item
+    if recipe.result.metadata then
+        for _, v in pairs(recipe.result.metadata) do
+            resultLabel = resultLabel .. " [" .. tostring(v) .. "]"
+            break
+        end
+    end
 
     lib.progressCircle({
         duration = recipe.time or Config.CraftingTime,
-        label = "Crafting " .. (recipe.result.label or recipe.result.item) .. "...",
+        label = "Crafting " .. resultLabel .. "...",
         disable = { move = true }
     })
 
     TriggerServerEvent("nbk_drug_dealer:completeCrafting", recipeIndex)
-    
     craftingActive = false
+end)
+
+-- ============================================
+-- PLUG CRAFTING INTERACTION (Config.PlugCraftingCoords)
+-- ============================================
+
+local function openPlugCraftingMenu()
+    if not Config.CraftingRecipes or #Config.CraftingRecipes == 0 then return end
+
+    local opts = {}
+    for i, recipe in ipairs(Config.CraftingRecipes) do
+        -- Build ingredient string
+        local ingParts = {}
+        for _, ing in ipairs(recipe.ingredients or {}) do
+            table.insert(ingParts, ing.count .. "x " .. ing.item)
+        end
+        local ingText = #ingParts > 0 and table.concat(ingParts, ",  ") or "No ingredients"
+
+        -- Build result label (include metadata like strain/quality)
+        local resultLabel = recipe.result.item .. (recipe.result.count and recipe.result.count > 1 and ("  x" .. recipe.result.count) or "")
+        if recipe.result.metadata then
+            for _, v in pairs(recipe.result.metadata) do
+                resultLabel = resultLabel .. "  [" .. tostring(v) .. "]"
+                break -- only show first metadata value in title
+            end
+        end
+
+        table.insert(opts, {
+            title       = resultLabel,
+            description = "Requires: " .. ingText,
+            icon        = "flask",
+            event       = "nbk:plugCraft",
+            args        = { index = i }
+        })
+    end
+
+    lib.registerContext({
+        id          = "plug_crafting_menu",
+        title       = "Plug Crafting",
+        description = "Select a recipe to craft",
+        options     = opts
+    })
+    lib.showContext("plug_crafting_menu")
+end
+
+AddEventHandler("nbk:plugCraft", function(data)
+    if not data or not data.index then return end
+    TriggerEvent('nbk_drug_dealer:startCrafting', data.index)
+end)
+
+-- E-key proximity thread
+CreateThread(function()
+    if not Config.PlugCraftingCoords or #Config.PlugCraftingCoords == 0 then return end
+    Wait(2000)
+    while true do
+        local sleep    = 800
+        local myPed    = PlayerPedId()
+        local myCoords = GetEntityCoords(myPed)
+        local inRange  = false
+
+        for _, spot in ipairs(Config.PlugCraftingCoords) do
+            local sx = spot.x or spot[1]
+            local sy = spot.y or spot[2]
+            local sz = spot.z or spot[3]
+            if sx and sy and sz then
+                local dist = #(myCoords - vector3(sx, sy, sz))
+                if dist < 2.5 then
+                    inRange = true
+                    sleep   = 0
+                    if not plugCraftShowingTextUI then
+                        lib.showTextUI("[E] Plug Crafting Table")
+                        plugCraftShowingTextUI = true
+                    end
+                    local now = GetGameTimer()
+                    if IsControlJustPressed(0, 38) and (now - lastPlugCraftEKey) > 300 then
+                        lastPlugCraftEKey = now
+                        lib.hideTextUI()
+                        plugCraftShowingTextUI = false
+                        lib.callback('nbk_drug_dealer:isPlug', false, function(isPlug)
+                            if not isPlug then
+                                lib.notify({ title = "Crafting", description = "You don't have the required job.", type = "error" })
+                                return
+                            end
+                            openPlugCraftingMenu()
+                        end)
+                    end
+                    break
+                end
+            end
+        end
+
+        if not inRange and plugCraftShowingTextUI then
+            lib.hideTextUI()
+            plugCraftShowingTextUI = false
+        end
+        Wait(sleep)
+    end
+end)
+
+-- Marker drawing thread (orange disc, same style as job crafting markers)
+CreateThread(function()
+    if not Config.PlugCraftingCoords or #Config.PlugCraftingCoords == 0 then return end
+    local markerDist = type(Config.CraftingMarkerDistance) == "number" and Config.CraftingMarkerDistance or 30.0
+    while true do
+        local myPed    = PlayerPedId()
+        local myCoords = GetEntityCoords(myPed)
+        local inRange  = false
+        for _, spot in ipairs(Config.PlugCraftingCoords) do
+            local sx = spot.x or spot[1]
+            local sy = spot.y or spot[2]
+            local sz = (spot.z or spot[3])
+            if sx and sy and sz then
+                local dist = #(myCoords - vector3(sx, sy, sz))
+                if dist <= markerDist then
+                    inRange = true
+                    DrawMarker(25, sx, sy, sz - 0.99, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.2, 1.2, 0.5, 255, 140, 0, 160)
+                end
+            end
+        end
+        Wait(inRange and 0 or 400)
+    end
 end)
 
 -- ============================================
