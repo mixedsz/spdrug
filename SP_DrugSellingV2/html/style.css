@@ -1,0 +1,197 @@
+body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Segoe UI', sans-serif;
+    background: transparent;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.hidden {
+    display: none !important;
+    visibility: hidden;
+    opacity: 0;
+}
+
+#progress-wrapper {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 99999;
+    pointer-events: none;
+}
+
+.progress-card {
+    width: 340px;
+    padding: 25px;
+    border-radius: 14px;
+    background: rgba(15,15,15,0.95);
+    box-shadow: 0 0 30px rgba(0,0,0,0.6);
+    text-align: center;
+    color: white;
+    pointer-events: auto;
+    position: relative;
+    z-index: 99999;
+}
+
+.progress-circle {
+    position: relative;
+    width: 140px;
+    height: 140px;
+    margin: auto;
+}
+
+svg {
+    transform: rotate(-90deg);
+}
+
+circle {
+    fill: none;
+    stroke-width: 10;
+    stroke-linecap: round;
+}
+
+circle:first-child {
+    stroke: #2b2b2b;
+}
+
+#progress-bar {
+    stroke: #4ade80;
+    stroke-dasharray: 377;
+    stroke-dashoffset: 377;
+    transition: stroke-dashoffset 0.1s linear;
+}
+
+.percent {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(90deg);
+    font-size: 22px;
+    font-weight: bold;
+}
+
+.progress-info h1 {
+    margin: 15px 0 5px;
+    font-size: 20px;
+}
+
+.progress-info p {
+    margin: 0;
+    font-size: 14px;
+    opacity: 0.7;
+}
+
+#cancel {
+    display: block;
+    margin-top: 10px;
+    font-size: 12px;
+    opacity: 0.4;
+}
+
+/* Crafting NUI */
+#crafting-app {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: rgba(0, 0, 0, 0.7);
+}
+.pharmacy-container {
+    width: 90%;
+    max-width: 1200px;
+    height: 85vh;
+    background: #1a1a1a;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid #2d2d2d;
+}
+.pharmacy-header {
+    background: linear-gradient(135deg, #2d1b4e 0%, #1a0d2e 100%);
+    padding: 24px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid #3d2b5e;
+}
+.header-left { display: flex; align-items: center; gap: 20px; }
+.pharmacy-icon { width: 48px; height: 48px; color: #a855f7; display: flex; align-items: center; justify-content: center; }
+.pharmacy-icon svg { width: 100%; height: 100%; }
+.header-text h1 { color: #fff; font-size: 24px; font-weight: 600; margin: 0; }
+.header-subtitle { color: #b8b8b8; font-size: 14px; margin: 4px 0 0 0; }
+.close-btn {
+    background: rgba(255,255,255,0.1); border: none; width: 40px; height: 40px; border-radius: 8px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; color: #fff;
+}
+.close-btn:hover { background: rgba(255,255,255,0.2); }
+.close-btn svg { width: 20px; height: 20px; }
+.pharmacy-content { flex: 1; padding: 32px; overflow-y: auto; background: #1a1a1a; }
+.medications-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+.medication-card {
+    background: #252525; border-radius: 12px; padding: 20px; cursor: pointer; transition: all 0.3s; border: 1px solid #333;
+}
+.medication-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(168,85,247,0.3); border-color: #a855f7; }
+.medication-card-header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.pill-icon { width: 40px; height: 40px; color: #a855f7; flex-shrink: 0; }
+.medication-title h3 { color: #fff; font-size: 18px; font-weight: 600; margin: 0 0 4px 0; }
+.medication-title p { color: #b8b8b8; font-size: 13px; margin: 0; }
+.medication-details { display: flex; flex-direction: column; gap: 12px; }
+.detail-row { display: flex; justify-content: space-between; align-items: center; }
+.detail-row .label { color: #888; font-size: 13px; }
+.detail-row .value { color: #fff; font-size: 14px; font-weight: 500; }
+.duration-badge { background: #3d2b5e; color: #a855f7; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+.required-badge { background: #2d4a2d; color: #4ade80; padding: 4px 12px; border-radius: 6px; font-size: 12px; }
+.modal-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8);
+    display: flex; justify-content: center; align-items: center; z-index: 1000;
+}
+.modal-content {
+    background: #1a1a1a; border-radius: 16px; width: 90%; max-width: 600px; max-height: 90vh; overflow-y: auto;
+    border: 1px solid #2d2d2d; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.modal-header {
+    background: linear-gradient(135deg, #2d1b4e 0%, #1a0d2e 100%);
+    padding: 24px 32px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #3d2b5e;
+}
+.modal-header h2 { color: #fff; font-size: 24px; font-weight: 600; margin: 0; }
+.modal-close {
+    background: rgba(255,255,255,0.1); border: none; width: 36px; height: 36px; border-radius: 8px;
+    cursor: pointer; color: #fff; font-size: 24px; display: flex; align-items: center; justify-content: center;
+}
+.modal-body { padding: 32px; }
+.medication-detail-info { display: flex; flex-direction: column; gap: 24px; margin-bottom: 32px; }
+.detail-section { display: flex; flex-direction: column; gap: 8px; }
+.detail-section label { color: #888; font-size: 13px; font-weight: 600; text-transform: uppercase; }
+.detail-section p { color: #fff; font-size: 16px; margin: 0; }
+.required-items { display: flex; flex-direction: column; gap: 12px; }
+.required-item {
+    background: #252525; padding: 12px 16px; border-radius: 8px; display: flex; align-items: center; gap: 12px;
+    color: #fff; border: 1px solid #333;
+}
+.modal-actions { display: flex; gap: 16px; justify-content: flex-end; }
+.btn-secondary, .btn-primary {
+    padding: 12px 24px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+}
+.btn-secondary { background: #333; color: #fff; }
+.btn-primary { background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%); color: #fff; }
+.btn-primary:hover { background: linear-gradient(135deg, #9333ea 0%, #6d28d9 100%); }
+.loading-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9);
+    display: flex; justify-content: center; align-items: center; z-index: 2000;
+}
+.loading-content { text-align: center; color: #fff; }
+.loading-spinner {
+    width: 60px; height: 60px; border: 4px solid #333; border-top-color: #a855f7; border-radius: 50%;
+    animation: spin 1s linear infinite; margin: 0 auto 24px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#crafting-loading-text { font-size: 18px; margin-bottom: 24px; }
+.loading-progress { width: 300px; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+.loading-progress-bar { height: 100%; background: linear-gradient(90deg, #a855f7 0%, #7c3aed 100%); width: 0%; transition: width 0.1s; border-radius: 4px; }

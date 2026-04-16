@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crafting</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="progress-wrapper" class="hidden">
+        <div class="progress-card">
+            <div class="progress-circle">
+                <svg>
+                    <circle cx="70" cy="70" r="60"></circle>
+                    <circle cx="70" cy="70" r="60" id="progress-bar"></circle>
+                </svg>
+                <div class="percent" id="percent">0%</div>
+            </div>
+            <div class="progress-info">
+                <h1 id="title">Title</h1>
+                <p id="desc">Description</p>
+                <span id="cancel">Press [X] to cancel</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="crafting-app" class="hidden">
+        <div class="pharmacy-container">
+            <div class="pharmacy-header">
+                <div class="header-left">
+                    <div class="pharmacy-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7L12 12L22 7L12 2Z"/><path d="M2 17L12 22L22 17"/><path d="M2 12L12 17L22 12"/></svg>
+                    </div>
+                    <div class="header-text">
+                        <h1 id="crafting-header-title">Crafting</h1>
+                        <p class="header-subtitle">Select a recipe to craft</p>
+                    </div>
+                </div>
+                <button class="close-btn" id="crafting-close-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            </div>
+            <div class="pharmacy-content">
+                <div class="medications-grid" id="medicationsGrid"></div>
+            </div>
+        </div>
+        <div class="modal-overlay hidden" id="crafting-modal-overlay">
+            <div class="modal-content" onclick="event.stopPropagation()">
+                <div class="modal-header">
+                    <h2 id="modalTitle">Item</h2>
+                    <button class="modal-close" id="modalCloseBtn">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="medication-detail-info">
+                        <div class="detail-section"><label>Description</label><p id="modalDescription">-</p></div>
+                        <div class="detail-section"><label>Production Time</label><p id="modalDuration">-</p></div>
+                        <div class="detail-section"><label>Quantity</label><p id="modalOutput">-</p></div>
+                        <div class="detail-section"><label>Required Materials</label><div id="modalRequired" class="required-items"></div></div>
+                    </div>
+                    <div class="modal-actions">
+                        <button class="btn-secondary" id="modalCancelBtn">Cancel</button>
+                        <button class="btn-primary" id="modalCraftBtn">Begin Crafting</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="loading-overlay hidden" id="crafting-loading">
+            <div class="loading-content">
+                <div class="loading-spinner"></div>
+                <p id="crafting-loading-text">Crafting...</p>
+                <div class="loading-progress"><div class="loading-progress-bar" id="crafting-progress-bar"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
