@@ -1150,5 +1150,16 @@ Config.DropOffLocations = {
     vector3(232.41, 672.19, 189.9740),     -- Vinewood Hills cul-de-sac house
     vector3(-595.18, 531.67, 107.7550)     -- Mid-hills front door
 }
+-- Retail/breakdown items (grams, pills, deuces, 3.5g) drop-off quantity
 Config.DropOffMinQty = 1
 Config.DropOffMaxQty = 6
+
+-- Wholesale items (bricks, pounds, pints, boxes) drop-off quantity
+-- Lower ceiling because each item is worth much more
+Config.WholesaleDropOffMinQty = 1
+Config.WholesaleDropOffMaxQty = 3
+
+-- Price multiplier applied to retail/breakdown items when sold via wholesale drop-off.
+-- 0.25 = 25% of the item's normal minPrice-maxPrice range.
+-- Plugs who bust down first and then sell lose money — this is intentional.
+Config.RetailDropOffMultiplier = 0.25

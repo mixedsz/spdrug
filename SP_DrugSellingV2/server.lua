@@ -104,8 +104,17 @@ RegisterNetEvent('nbk_drug_dealer:completeDropOff', function(itemName, qty)
         return
     end
 
-    local priceEach = math.random(drugInfo.minPrice, drugInfo.maxPrice)
-    local total     = priceEach * qty
+    -- Wholesale category items (bricks, pounds, pints) pay full price.
+    -- Retail/breakdown items pay a fraction of their street value — selling
+    -- already-busted-down product at wholesale is a bad deal by design.
+    local priceEach
+    if drugInfo.category == 'wholesale' then
+        priceEach = math.random(drugInfo.minPrice, drugInfo.maxPrice)
+    else
+        local base = math.random(drugInfo.minPrice, drugInfo.maxPrice)
+        priceEach = math.max(1, math.floor(base * (Config.RetailDropOffMultiplier or 0.25)))
+    end
+    local total = priceEach * qty
 
     if Config.PaymentType == 'money' then
         xPlayer.addMoney(total)
@@ -120,9 +129,10 @@ RegisterNetEvent('nbk_drug_dealer:completeDropOff', function(itemName, qty)
 
     DebugPrint(("DropOff: src=%d item=%s qty=%d pay=$%d"):format(src, itemName, qty, total))
 
+    local tierLabel = (drugInfo.category == 'wholesale') and 'Wholesale Rate' or ('Breakdown Rate - ' .. math.floor((Config.RetailDropOffMultiplier or 0.25) * 100) .. '% value')
     TriggerClientEvent('ox_lib:notify', src, {
         title       = 'Drop-Off',
-        description = ('Dropped off %dx %s — received $%d.'):format(qty, drugInfo.label, total),
+        description = ('Dropped off %dx %s — $%d (%s)'):format(qty, drugInfo.label, total, tierLabel),
         type        = 'success',
     })
 
