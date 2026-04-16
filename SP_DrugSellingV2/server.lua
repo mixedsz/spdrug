@@ -4,20 +4,18 @@
 
 local ESX = nil
 
-AddEventHandler('esx:getSharedObject', function(obj)
+-- TriggerEvent asks es_extended to call our callback with the ESX object.
+-- Do NOT also use AddEventHandler here — doing so causes the AddEventHandler
+-- to receive the callback *function* as obj (funcref), overwriting ESX.
+TriggerEvent('esx:getSharedObject', function(obj)
     ESX = obj
-    -- Register all drug items so players can use them from inventory
+    -- Register all drug items as usable via ESX
     for _, drug in ipairs(Config.Drugs) do
         local name = drug.name
         ESX.RegisterUsableItem(name, function(src)
             TriggerClientEvent('nbk_drug_dealer:useItem', src, name)
         end)
     end
-end)
-
--- Fallback: synchronous fetch
-TriggerEvent('esx:getSharedObject', function(obj)
-    ESX = obj
 end)
 
 local function DebugPrint(...)
