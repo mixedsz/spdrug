@@ -187,19 +187,6 @@ local function getDrugInfo(itemName)
     return nil
 end
 
-local function inSellZone()
-    if not Config.SellZones or type(Config.SellZones) ~= "table" then return false end
-    local pos = GetEntityCoords(PlayerPedId())
-    for _, z in ipairs(Config.SellZones) do
-        if z and z.radius then
-            local zc = z.coords
-            local v = type(zc) == "vector3" and zc or (type(zc) == "table" and vector3(zc.x or zc[1] or 0, zc.y or zc[2] or 0, zc.z or zc[3] or 0))
-            if v and #(pos - v) <= (tonumber(z.radius) or 100.0) then return true end
-        end
-    end
-    return false
-end
-
 
 -- ============================================
 -- PED TARGET INTERACTION
@@ -260,16 +247,11 @@ end
 -- /DEALER COMMAND
 -- ============================================
 
-RegisterCommand("dealer", function()
-    if not inSellZone() then
-        lib.notify({ title = "Dealer", description = "No Junkie's around here! find somewhere else.", type = "error" })
-        return
-    end
-
+RegisterCommand("wholesales", function()
     if selling then
         resetSale()
         if blip then RemoveBlip(blip) end
-        lib.notify({ title = "Dealer", description = "Cancelled deal.", type = "error" })
+        lib.notify({ title = "Wholesales", description = "Cancelled drop-off.", type = "error" })
         return
     end
 
@@ -277,14 +259,14 @@ RegisterCommand("dealer", function()
     CreateThread(function()
         Wait(0)
         lib.registerContext({
-            id = "dealer_menu",
-            title = "select a way to move your product",
-            description = "Select your selling method",
+            id = "wholesales_menu",
+            title = "Wholesale Drop-Off",
+            description = "Drive product to the meet spot and deliver",
             options = {
                 { title = "Drop-Off Product", description = "Drive to meet point; exit car to deliver.", icon = "map-marker-alt", event = "nbk:selectMode", args = { m = "dropoff" } }
             }
         })
-        lib.showContext("dealer_menu")
+        lib.showContext("wholesales_menu")
     end)
 end)
 
