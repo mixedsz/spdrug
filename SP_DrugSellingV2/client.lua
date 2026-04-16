@@ -187,19 +187,6 @@ local function getDrugInfo(itemName)
     return nil
 end
 
-local function inSellZone()
-    if not Config.SellZones or type(Config.SellZones) ~= "table" then return false end
-    local pos = GetEntityCoords(PlayerPedId())
-    for _, z in ipairs(Config.SellZones) do
-        if z and z.radius then
-            local zc = z.coords
-            local v = type(zc) == "vector3" and zc or (type(zc) == "table" and vector3(zc.x or zc[1] or 0, zc.y or zc[2] or 0, zc.z or zc[3] or 0))
-            if v and #(pos - v) <= (tonumber(z.radius) or 100.0) then return true end
-        end
-    end
-    return false
-end
-
 
 -- ============================================
 -- PED TARGET INTERACTION
@@ -247,8 +234,10 @@ local function addPedTarget(pedEntity, drug, qty, vehicle)
                     if vehicle and DoesEntityExist(vehicle) then
                         cornerDriveOffAndDespawn(pedEntity, vehicle, false)
                     else
+                        FreezeEntityPosition(pedEntity, false)
+                        SetBlockingOfNonTemporaryEvents(pedEntity, false)
                         TaskWanderStandard(pedEntity, 10.0, 10)
-                        despawnPedAfter(pedEntity, 15000)
+                        despawnPedAfter(pedEntity, 5000)
                     end
                 end
             end
@@ -260,16 +249,11 @@ end
 -- /DEALER COMMAND
 -- ============================================
 
-RegisterCommand("dealer", function()
-    if not inSellZone() then
-        lib.notify({ title = "Dealer", description = "No Junkie's around here! find somewhere else.", type = "error" })
-        return
-    end
-
+RegisterCommand("wholesales", function()
     if selling then
         resetSale()
         if blip then RemoveBlip(blip) end
-        lib.notify({ title = "Dealer", description = "Cancelled deal.", type = "error" })
+        lib.notify({ title = "Wholesales", description = "Cancelled drop-off.", type = "error" })
         return
     end
 
@@ -277,14 +261,14 @@ RegisterCommand("dealer", function()
     CreateThread(function()
         Wait(0)
         lib.registerContext({
-            id = "dealer_menu",
-            title = "select a way to move your product",
-            description = "Select your selling method",
+            id = "wholesales_menu",
+            title = "Wholesale Drop-Off",
+            description = "Drive product to the meet spot and deliver",
             options = {
                 { title = "Drop-Off Product", description = "Drive to meet point; exit car to deliver.", icon = "map-marker-alt", event = "nbk:selectMode", args = { m = "dropoff" } }
             }
         })
-        lib.showContext("dealer_menu")
+        lib.showContext("wholesales_menu")
     end)
 end)
 
@@ -292,39 +276,85 @@ AddEventHandler("nbk:selectMode", function(data)
     mode = data.m
     lib.callback("nbk_drug_dealer:getPlayerDrugs", false, function(drugs)
         if #drugs == 0 then
-            lib.notify({ title = "Dealer", description = "No drugs in inventory.", type = "error" })
+            lib.notify({ title = "Wholesales", description = "No drugs in inventory.", type = "error" })
             return
         end
 
-        -- Filter to only show retail drugs (can be sold to NPC)
-        local retailDrugs = {}
+        -- Wholesale items (bricks, pounds, pints, boxes) → full price
+        -- Retail/breakdown items (grams, pills, deuces, 3.5g) → discounted rate
+        -- Usable items (poured cups, consumed forms) → not sold here
+        local wholesaleItems = {}
+        local retailItems = {}
         for _, d in ipairs(drugs) do
-            local drugInfo = getDrugInfo(d.name)
-            if drugInfo and drugInfo.canSellToNPC then
-                table.insert(retailDrugs, d)
+            local info = getDrugInfo(d.name)
+            if info then
+                if info.category == "wholesale" then
+                    table.insert(wholesaleItems, { data = d, info = info })
+                elseif info.category == "retail" then
+                    table.insert(retailItems, { data = d, info = info })
+                end
             end
         end
 
-        if #retailDrugs == 0 then
-            lib.notify({ title = "Dealer", description = "You don't have any products to drop off. Bust down your wholesale items first.", type = "error" })
+        if #wholesaleItems == 0 and #retailItems == 0 then
+            lib.notify({ title = "Wholesales", description = "No sellable products in inventory.", type = "error" })
             return
         end
 
+        local discountPct = math.floor((Config.RetailDropOffMultiplier or 0.25) * 100)
         local opts = {}
-        for _, d in ipairs(retailDrugs) do
+
+        -- Wholesale section header
+        if #wholesaleItems > 0 then
             table.insert(opts, {
-                title = d.label .. " (" .. d.count .. "x)",
-                description = "Tap to sell this product",
-                icon = "capsules",
-                event = "nbk:startSale",
-                args = { drug = d.name, count = d.count }
+                title = "-- Wholesale (Full Price) --",
+                description = "Bricks, pounds, pints, boxes",
+                icon = "box",
+                disabled = true
             })
+            for _, entry in ipairs(wholesaleItems) do
+                local d = entry.data
+                local info = entry.info
+                table.insert(opts, {
+                    title = d.label .. "  x" .. d.count,
+                    description = ("Full price: $%d–$%d each | Qty: %d–%d per drop"):format(
+                        info.minPrice, info.maxPrice,
+                        Config.WholesaleDropOffMinQty or 1, Config.WholesaleDropOffMaxQty or 3
+                    ),
+                    icon = "box",
+                    event = "nbk:startSale",
+                    args = { drug = d.name, count = d.count }
+                })
+            end
+        end
+
+        -- Breakdown section header
+        if #retailItems > 0 then
+            table.insert(opts, {
+                title = ("-- Breakdown Items (%d%% Value) --"):format(discountPct),
+                description = "Grams, pills, deuces — sold cheap",
+                icon = "pills",
+                disabled = true
+            })
+            for _, entry in ipairs(retailItems) do
+                local d = entry.data
+                local info = entry.info
+                local discountedMin = math.max(1, math.floor(info.minPrice * (Config.RetailDropOffMultiplier or 0.25)))
+                local discountedMax = math.max(1, math.floor(info.maxPrice * (Config.RetailDropOffMultiplier or 0.25)))
+                table.insert(opts, {
+                    title = d.label .. "  x" .. d.count,
+                    description = ("Discounted: $%d–$%d each (%d%% rate)"):format(discountedMin, discountedMax, discountPct),
+                    icon = "pills",
+                    event = "nbk:startSale",
+                    args = { drug = d.name, count = d.count }
+                })
+            end
         end
 
         lib.registerContext({
             id = "drug_menu",
             title = "Select Product",
-            description = "Choose what product you want to move",
+            description = "Choose what to drop off",
             options = opts
         })
         lib.showContext("drug_menu")
@@ -334,7 +364,11 @@ end)
 AddEventHandler("nbk:startSale", function(data)
     if not data.drug then return end
 
-    local qty = math.random(Config.DropOffMinQty, Config.DropOffMaxQty)
+    local info = getDrugInfo(data.drug)
+    local isWholesale = info and info.category == "wholesale"
+    local minQty = isWholesale and (Config.WholesaleDropOffMinQty or 1) or (Config.DropOffMinQty or 1)
+    local maxQty = isWholesale and (Config.WholesaleDropOffMaxQty or 3) or (Config.DropOffMaxQty or 6)
+    local qty = math.random(minQty, maxQty)
     qty = math.min(qty, data.count)
     TriggerEvent("nbk:dropOffSale", { drug = data.drug, qty = qty, count = data.count })
 end)
@@ -405,14 +439,25 @@ AddEventHandler("nbk:dropOffSale", function(data)
         AddTextComponentString("Drop-Off")
         EndTextCommandSetBlipName(blip)
 
-        lib.notify({ title = "Drop-Off Product", description = "Drive to the location. Serve will be there when you arrive.", type = "inform" })
+        local dropInfo = getDrugInfo(drug)
+        local dropTier = (dropInfo and dropInfo.category == "wholesale") and "Wholesale drop-off — full price." or ("Breakdown drop-off — " .. math.floor((Config.RetailDropOffMultiplier or 0.25) * 100) .. "% value.")
+        lib.notify({ title = "Drop-Off Product", description = "Drive to the location. " .. dropTier, type = "inform" })
 
         -- Spawn ped when player arrives (within 30m)
         CreateThread(function()
             local pedModel = Config.JunkiePeds[math.random(#Config.JunkiePeds)]
             local pedHash = GetHashKey(pedModel)
             RequestModel(pedHash)
-            while not HasModelLoaded(pedHash) do Wait(10) end
+            -- Cap model loading at 10 seconds so the thread doesn't hang forever
+            local modelWait = 0
+            while not HasModelLoaded(pedHash) and modelWait < 10000 do
+                Wait(10)
+                modelWait = modelWait + 10
+            end
+            if not HasModelLoaded(pedHash) then
+                DebugPrint("Drop-off ped model failed to load: " .. pedModel)
+                return
+            end
 
             while selling and currentDropoffLoc and currentDropoffDrug and not dropoffPedSpawned do
                 Wait(500)
@@ -420,15 +465,21 @@ AddEventHandler("nbk:dropOffSale", function(data)
                 local dist = #(playerPos - currentDropoffLoc)
                 if dist < 30.0 then
                     dropoffPedSpawned = true
-                    local loc = currentDropoffLoc
-                    -- Spawn on nearest major road (black road), not sidewalk (parking lots OK)
-                    local roadPos = getClosestMajorRoadPos(loc.x, loc.y, loc.z)
+                    local spawnLoc = currentDropoffLoc
+
+                    -- Pre-load collision so road-node queries return valid data
+                    ensureCollisionLoadedAt(spawnLoc.x, spawnLoc.y, spawnLoc.z)
+                    Wait(150)
+
+                    -- Try to find nearest road; fall back to the raw drop-off coord
+                    local roadPos = getClosestMajorRoadPos(spawnLoc.x, spawnLoc.y, spawnLoc.z)
                     if not roadPos then
-                        roadPos = getClosestRoadPos(loc.x, loc.y, loc.z, NODE_TYPE_PAVED_ROAD)
+                        roadPos = getClosestRoadPos(spawnLoc.x, spawnLoc.y, spawnLoc.z, NODE_TYPE_PAVED_ROAD)
                     end
-                    local spawnX = roadPos.x
-                    local spawnY = roadPos.y
-                    local spawnZ = roadPos.z
+                    local spawnX = roadPos and roadPos.x or spawnLoc.x
+                    local spawnY = roadPos and roadPos.y or spawnLoc.y
+                    local spawnZ = roadPos and roadPos.z or spawnLoc.z
+
                     ped = CreatePed(4, pedHash, spawnX, spawnY, spawnZ, 0.0, true, true)
                     if ped and ped ~= 0 then
                         SetEntityAsMissionEntity(ped, true, true)
@@ -437,6 +488,9 @@ AddEventHandler("nbk:dropOffSale", function(data)
                         TaskStandStill(ped, -1)
                         addPedTarget(ped, currentDropoffDrug, currentDropoffQty, nil)
                         lib.notify({ title = "Drop-Off", description = "Serve is here. Third-eye to complete the deal.", type = "success" })
+                    else
+                        DebugPrint("Drop-off ped CreatePed returned 0 — spawn failed at " .. spawnX .. "," .. spawnY .. "," .. spawnZ)
+                        dropoffPedSpawned = false -- Allow retry
                     end
                     break
                 end
@@ -1746,10 +1800,9 @@ local function useItemHandler(data, slot)
     end
 end
 
-exports('useItem', useItemHandler)
-
--- IMPORTANT: Your items file must match the resource folder name
--- If your folder is 'SP_DrugSellingV2', items must use: client = { export = 'SP_DrugSellingV2.useItem' }
--- If your items file uses 'nbk_drug_dealer.useItem', you MUST either:
--- 1. Rename resource folder to 'nbk_drug_dealer', OR
--- 2. Update ALL items in ox_inventory to use: client = { export = 'SP_DrugSellingV2.useItem' }
+-- Items are registered via ESX.RegisterUsableItem on the server.
+-- No ox_inventory export or client export required in items.lua.
+RegisterNetEvent('nbk_drug_dealer:useItem')
+AddEventHandler('nbk_drug_dealer:useItem', function(itemName)
+    useItemHandler({ name = itemName, metadata = {} }, nil)
+end)

@@ -5,12 +5,9 @@ Config = {}
 -- ============================================
 Config.PaymentType = "money" -- "money", "bank", "black_money", or item name
 Config.Debug = false        -- Toggle verbose debug prints (server/client)
-Config.ScamChance = 0.30      -- 30% scam chance (random each time, no pattern)
-Config.DeclineChance = 0.25   -- 25% decline chance (random each time, no pattern)
 Config.CraftingTime = 60000   -- 1 minute (60000ms) to craft wholesale items
 Config.EnableAddiction = false -- Enable/disable addiction system
-Config.DriverlessDrivingStyle = 786603 -- Avoid vehicles/peds/objects, stop at lights (better for MLO/custom hoods with trees, medians, fences)
-Config.MaxDealerDistFromRoadForBlockWork = 20 -- Max meters dealer can be from a road to call junkie (avoids bad driving/misdirection)
+Config.DriverlessDrivingStyle = 786603 -- Avoid vehicles/peds/objects, stop at lights
 
 -- ============================================
 -- DRUG DEFINITIONS & ECONOMY
@@ -963,17 +960,6 @@ Config.Craftings = {
 Config.CraftingMarkerDistance = 30.0
 Config.CraftingMarkerColor = { r = 0, g = 200, b = 255, a = 120 } -- cyan circle
 
--- Block work (corner sale): spawn junkie closer first for MLO/custom maps where long pathfinding can glitch
--- Try close range (min–max) first, then fall back to far range if no road found
--- Spawn junkie at CLOSE range first (shorter drive = better pathfinding in custom hoods/MLOs). If many peds wreck or circle, try 50–120 for CloseMin/Max.
--- Optional: ensure resource "chicago_gps_nodes" and fill nodes/connections in its config so block work uses your custom hood road coords for spawn, dest, and pathfinding.
-Config.BlockWorkSpawnCloseMin = 80.0
-Config.BlockWorkSpawnCloseMax = 220.0
-Config.BlockWorkSpawnFarMin = 350.0
-Config.BlockWorkSpawnFarMax = 550.0
--- Waypoint is snapped to road only if within this many meters of the ideal route (avoids ped circling the block on addon/MLO maps)
-Config.BlockWorkWaypointMaxSnapOffLine = 25.0
-
 -- ============================================
 -- VISUAL EFFECTS CONFIG
 -- ============================================
@@ -1100,21 +1086,8 @@ Config.Addiction = {
 }
 
 -- ============================================
--- NPC PED & VEHICLE MODELS
+-- DROP-OFF NPC PED MODELS
 -- ============================================
-Config.JunkieVehicles = {
-    "faggio",
-    "blista",
-    "dilettante",
-    "ingot",
-    "stanier",
-    "stratum",
-    "surge",
-    "tailgater",
-    "premier",
-    "emperor"
-}
-
 Config.JunkiePeds = {
     "a_m_m_skidrow_01",
     "a_m_o_tramp_01",
@@ -1141,73 +1114,6 @@ Config.JunkiePeds = {
     "a_m_m_salton_04"
 }
 
-Config.DeclinePhrases = {
-    "This shit laced!",
-    "This shit ass!",
-    "Man, I ain't feeling this!",
-    "Not my style, bro.",
-    "Pass, I'll pass."
-}
-
--- ============================================
--- SELL ZONES (Where /dealer works)
--- ============================================
-Config.SellZones = {
-    { coords = vector3(-161.7769, -1154.9491, 23.5865), radius = 100.0 },
-    { coords = vector3(-119.5655, -1283.9286, 29.2988), radius = 100.0 },
-    { coords = vector3(-149.6186, -1305.4797, 29.2918), radius = 100.0 },
-    { coords = vector3(-198.8233, -1305.4453, 29.5319), radius = 100.0 },
-        { coords = vector3(381.4821, -763.8704, 29.2853), radius = 100.0 },
-    { coords = vector3(1055.0809, -2245.5310, 30.3817), radius = 100.0 },
-    { coords = vector3(-293.7414, -916.7805, 31.6600), radius = 100.0 },
-    { coords = vector3(417.1766, -1530.8622, 29.3035), radius = 100.0 },
-    { coords = vector3(936.9994, -1543.4521, 29.2470), radius = 100.0 },
-    { coords = vector3(488.2662, -2255.1680, 14.7692), radius = 100.0 },
-    { coords = vector3(-1082.1207, -980.3629, 2.1988), radius = 100.0 },
-    { coords = vector3(-769.7955, -563.6756, 30.3088), radius = 100.0 },
-    { coords = vector3(1088.9519, -607.5974, 61.2532), radius = 100.0 },
-    { coords = vector3(1171.2482, -1361.6246, 35.2175), radius = 100.0 },
-    { coords = vector3(478.3376, -1382.0044, 29.0429), radius = 100.0 },
-    { coords = vector3(-1098.0593, -1546.8419, 4.5497), radius = 100.0 },
-    { coords = vector3(706.7853, -1092.8668, 22.4005), radius = 100.0 },
-    { coords = vector3(212.9627, -1548.1989, 30.9051), radius = 100.0 },
-    { coords = vector3(-972.2261, -954.6251, 2.2540), radius = 100.0 },
-    { coords = vector3(-240.1488, -1284.7954, 30.9283), radius = 100.0 },
-    { coords = vector3(-202.7268, -1353.7091, 31.3038), radius = 100.0 },
-    { coords = vector3(-179.5643, -1382.7080, 30.2254), radius = 100.0 },
-    { coords = vector3(-81.9355, -1467.2742, 32.3413), radius = 100.0 },
-    { coords = vector3(-52.5056, -1484.1693, 31.4792), radius = 100.0 },
-    { coords = vector3(8.5404, -1523.6520, 29.7518), radius = 100.0 },
-    { coords = vector3(-24.7371, -1583.1415, 29.2092), radius = 100.0 },
-    { coords = vector3(23.4838, -1579.6122, 29.2929), radius = 100.0 },
-    { coords = vector3(57.3811, -1601.7478, 29.1596), radius = 100.0 },
-    { coords = vector3(86.6677, -1552.7280, 29.3026), radius = 100.0 },
-    { coords = vector3(135.9297, -1554.2003, 29.2609), radius = 100.0 },
-    { coords = vector3(105.5695, -1491.7347, 29.2971), radius = 100.0 },
-    { coords = vector3(170.2240, -1452.7650, 29.2801), radius = 100.0 },
-    { coords = vector3(202.9787, -1663.3571, 29.9490), radius = 100.0 },
-    { coords = vector3(242.5190, -1696.8715, 29.2024), radius = 100.0 },
-    { coords = vector3(24.4668, -1775.9480, 29.0041), radius = 100.0 },
-    { coords = vector3(-31.8883, -1753.0719, 29.2192), radius = 100.0 },
-    { coords = vector3(-73.1669, -1758.2903, 29.5052), radius = 100.0 },
-    { coords = vector3(35.5708, -1873.0703, 22.6426), radius = 100.0 },
-    { coords = vector3(439.1410, -1842.3333, 27.8549), radius = 100.0 },
-    { coords = vector3(530.1953, -1957.9949, 25.1776), radius = 100.0 },
-    { coords = vector3(468.8369, -1995.1016, 23.4392), radius = 100.0 },
-    { coords = vector3(516.7228, -2348.0623, 12.9798), radius = 100.0 },
-    { coords = vector3(542.3990, -2305.4851, 15.0364), radius = 100.0 },
-    { coords = vector3(597.4532, -2271.0059, 19.9454), radius = 100.0 },
-    { coords = vector3(852.2733, -2120.9968, 30.8561), radius = 100.0 },
-    { coords = vector3(882.6677, -1938.1482, 31.3684), radius = 100.0 },
-    { coords = vector3(890.2535, -1831.1409, 30.2274), radius = 100.0 },
-    { coords = vector3(767.2567, -1933.2659, 29.2946), radius = 100.0 },
-    { coords = vector3(724.1476, -1290.7419, 26.3755), radius = 100.0 },
-    { coords = vector3(697.2894, -1104.8391, 22.6015), radius = 100.0 },
-    { coords = vector3(-513.8922, -1704.1809, 21.1865), radius = 100.0 },
-    { coords = vector3(-1106.3147, -1055.2993, 2.1143), radius = 100.0 },
-    { coords = vector3(-292.1111, -416.6799, 30.0767), radius = 100.0 },
-    { coords = vector3(-1147.8899, -1540.6362, 4.5337), radius = 100.0 },
-}
 
 -- ============================================
 -- DROP-OFF LOCATIONS
@@ -1244,5 +1150,16 @@ Config.DropOffLocations = {
     vector3(232.41, 672.19, 189.9740),     -- Vinewood Hills cul-de-sac house
     vector3(-595.18, 531.67, 107.7550)     -- Mid-hills front door
 }
+-- Retail/breakdown items (grams, pills, deuces, 3.5g) drop-off quantity
 Config.DropOffMinQty = 1
 Config.DropOffMaxQty = 6
+
+-- Wholesale items (bricks, pounds, pints, boxes) drop-off quantity
+-- Lower ceiling because each item is worth much more
+Config.WholesaleDropOffMinQty = 1
+Config.WholesaleDropOffMaxQty = 3
+
+-- Price multiplier applied to retail/breakdown items when sold via wholesale drop-off.
+-- 0.25 = 25% of the item's normal minPrice-maxPrice range.
+-- Plugs who bust down first and then sell lose money — this is intentional.
+Config.RetailDropOffMultiplier = 0.25
